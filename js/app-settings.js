@@ -1,6 +1,10 @@
 /* ============================================================
    app-settings.js — budget, periode, master data, backup
    ============================================================ */
+/* ============================================================
+   app-settings.js — budget, periode, master data, backup
+   (Updated: Membaca Pendapatan Harian & Budget Otomatis)
+   ============================================================ */
 (function () {
   "use strict";
   var A = window.CCA;
@@ -33,19 +37,68 @@
   }
 
   /* ============================================================
-     BUDGET
+     HELPER: OTOMATISASI PENDAPATAN HARIAN & BUDGET
+     ============================================================ */
+  function getCalculatedRevenue(periodId) {
+    var total = 0, padma = 0, kamala = 0;
+    
+    // 1. Membaca dari data rekap harian yang diupload (S.state.dailyRevenue)
+    if (S.state.dailyRevenue && Array.isArray(S.state.dailyRevenue)) {
+      S.state.dailyRevenue.forEach(function (d) {
+        if (d.date && d.date.indexOf(periodId) === 0) {
+          total += (d.total || d.revenue || 0);
+          padma += (d.padma || 0);
+          kamala += (d.kamala || 0);
+        }
+      });
+    }
+    
+    // 2. Jika tidak ada di dailyRevenue khusus, baca dari entri transaksi harian yang memiliki info revenue
+    if (total === 0 && S.state.entries) {
+      S.state.entries.forEach(function (e) {
+        if (e.periodId === periodId || (e.date && e.date.indexOf(periodId) === 0)) {
+          if (e.revenue || e.revenueTotal || e.totalRevenue || e.source === "DAILY REVENUE") {
+            total += (e.revenue || e.revenueTotal || e.totalRevenue || e.amount || 0);
+            padma += (e.revenuePadma || e.padma || 0);
+            kamala += (e.revenueKamala || e.kamala || 0);
+          }
+        }
+      });
+    }
+
+    return { total: total, padma: padma, kamala: kamala };
+  }
+
+  /* ============================================================
+     BUDGET (Membaca Budget Otomatis)
      ============================================================ */
   function budgetLines() {
     var budget = {}, best = {};
+    
+    // 1. Muat budget dari state periode aktif
     S.state.budget.forEach(function (b) {
       if (b.periodId !== ui.periodId) return;
       budget[b.bagianId + "|" + b.kategoriId] = b.amount || 0;
       best[b.bagianId + "|" + b.kategoriId] = true;
     });
+
+    // 2. Membaca budget otomatis dari data yang diimpor/upload (misal dari Lembar Analisa / Master Workbook)
+    if (S.state.importedBudgets && S.state.importedBudgets[ui.periodId]) {
+      var imp = S.state.importedBudgets[ui.periodId];
+      imp.forEach(function (ib) {
+        var k = ib.bagianId + "|" + ib.kategoriId;
+        best[k] = true;
+        if (!(k in budget) || budget[k] === 0) {
+          budget[k] = ib.amount || 0;
+        }
+      });
+    }
+
     S.entries({ periodId: ui.periodId }).forEach(function (e) {
       best[e.bagianId + "|" + e.kategoriId] = true;
       if (!(e.bagianId + "|" + e.kategoriId in budget)) budget[e.bagianId + "|" + e.kategoriId] = 0;
     });
+
     var bagOrder = {}, katOrder = {};
     S.state.bagian.forEach(function (b, i) { bagOrder[b.id] = i; });
     S.state.kategori.forEach(function (k, i) { katOrder[k.id] = i; });
@@ -76,7 +129,7 @@
     });
 
     var html = '<div class="card"><div class="card-h"><div><h3>Budget per Bagian & Kategori</h3>' +
-      '<div class="sub">Periode ' + A.esc(A.period().label) + " · perubahan langsung tersimpan</div></div>" +
+      '<div class="sub">Periode ' + A.esc(A.period().label) + " · Membaca budget otomatis dari data upload & master</div></div>" +
       '<div class="spacer"></div><div class="card-tools">' +
       '<input type="search" id="budgetSearch" placeholder="Cari bagian / kategori..." value="' + A.esc(q) + '" style="width:200px" />' +
       '<button class="btn sm" data-act="dl-budget">' + A.icon("download") + " Template</button>" +
@@ -101,27 +154,34 @@
     });
     html += '</tbody><tfoot><tr><td colspan="2">TOTAL (' + shown.length + " baris)</td>" +
       '<td class="num">' + A.moneyPlain(total) + '</td><td class="num">' + A.moneyPlain(shown.reduce(function (a, l) { return a + (actMap[l.bagianId + "|" + l.kategoriId] || 0); }, 0)) + "</td><td></td><td></td></tr></tfoot></table></div>";
-    html += '<div class="hint-box" style="margin-top:12px">Angka budget awal berasal dari <b>LEMBAR ANALISA</b> workbook Cost Containment. ' +
+    html += '<div class="hint-box" style="margin-top:12px">Budget dibaca otomatis dari data unggahan (LEMBAR ANALISA / Workbook Cost Containment). ' +
       "Ubah nilai di kolom Budget lalu tekan Tab / klik di luar kolom untuk menyimpan otomatis.</div>";
     html += "</div></div>";
     return html;
   }
 
   /* ============================================================
-     PERIODE
+     PERIODE & PENDAPATAN (Pendapatan Harian Otomatis)
      ============================================================ */
   function periodeHtml() {
     var list = S.periods().slice().sort(function (a, b) { return a.id < b.id ? 1 : -1; });
     var html = '<div class="card"><div class="card-h"><div><h3>Periode & Pendapatan</h3>' +
-      '<div class="sub">Pendapatan dipakai untuk menghitung rasio biaya</div></div></div><div class="card-b">';
+      '<div class="sub">Pendapatan dibaca otomatis secara harian dari data yang diupload atau disesuaikan manual</div></div></div><div class="card-b">';
     html += '<div class="table-wrap"><table class="table compact"><thead><tr>' +
-      "<th>Periode</th><th class=\"num\">Pendapatan</th><th class=\"num\">PADMA</th><th class=\"num\">KAMALA</th><th class=\"num\">Target</th><th class=\"num\">Hari</th><th></th>" +
+      "<th>Periode</th><th class=\"num\">Pendapatan (Total)</th><th class=\"num\">PADMA</th><th class=\"num\">KAMALA</th><th class=\"num\">Target</th><th class=\"num\">Hari</th><th></th>" +
       "</tr></thead><tbody>";
+    
     list.forEach(function (p) {
-      html += "<tr><td class=\"name\">" + A.esc(p.label) + '<span class="sub">' + A.esc(p.id) + "</span></td>" +
-        '<td class="num"><input type="text" class="num" data-pid="' + esc(p.id) + '" data-field="revenue" value="' + (p.revenue || 0) + '" /></td>' +
-        '<td class="num"><input type="text" class="num" data-pid="' + esc(p.id) + '" data-field="revenuePadma" value="' + (p.revenuePadma || 0) + '" /></td>' +
-        '<td class="num"><input type="text" class="num" data-pid="' + esc(p.id) + '" data-field="revenueKamala" value="' + (p.revenueKamala || 0) + '" /></td>' +
+      // Hitung pendapatan otomatis dari data harian yang diupload
+      var calcRev = getCalculatedRevenue(p.id);
+      var displayRev = calcRev.total > 0 ? calcRev.total : (p.revenue || 0);
+      var displayPadma = calcRev.padma > 0 ? calcRev.padma : (p.revenuePadma || 0);
+      var displayKamala = calcRev.kamala > 0 ? calcRev.kamala : (p.revenueKamala || 0);
+
+      html += "<tr><td class=\"name\">" + A.esc(p.label) + '<span class="sub">' + A.esc(p.id) + " (Otomatis Harian)</span></td>" +
+        '<td class="num"><input type="text" class="num" data-pid="' + esc(p.id) + '" data-field="revenue" value="' + displayRev + '" /></td>' +
+        '<td class="num"><input type="text" class="num" data-pid="' + esc(p.id) + '" data-field="revenuePadma" value="' + displayPadma + '" /></td>' +
+        '<td class="num"><input type="text" class="num" data-pid="' + esc(p.id) + '" data-field="revenueKamala" value="' + displayKamala + '" /></td>' +
         '<td class="num"><input type="text" class="num" data-pid="' + esc(p.id) + '" data-field="target" value="' + (p.target || 0) + '" /></td>' +
         '<td class="num"><input type="number" class="num" data-pid="' + esc(p.id) + '" data-field="days" value="' + (p.days || 30) + '" min="28" max="31" /></td>' +
         '<td>' + (list.length > 1 ? '<button class="btn sm icon danger" data-act="del-period" data-pid="' + esc(p.id) + '" title="Hapus periode">' + A.icon("trash") + "</button>" : "") + "</td></tr>";
@@ -134,7 +194,7 @@
       '<div class="field" style="max-width:210px"><label>Pendapatan (Rp)</label><input type="text" id="newPeriodRevenue" placeholder="0" /></div>' +
       '<div class="field" style="max-width:210px"><label>Target (Rp)</label><input type="text" id="newPeriodTarget" placeholder="0" /></div>' +
       '<button class="btn primary" type="submit">' + A.icon("plus") + " Tambah</button></form>" +
-      '<div class="small muted" style="margin-top:8px">Budget periode baru otomatis disalin dari periode sebelumnya.</div>';
+      '<div class="small muted" style="margin-top:8px">Pendapatan dibaca otomatis dari rekap harian yang diunggah, dan budget periode baru otomatis disalin dari periode sebelumnya.</div>';
     html += "</div></div>";
     return html;
   }
@@ -238,9 +298,9 @@
     html += '<div class="card col-7"><div class="card-h"><div><h3>Zona Hati-hati</h3>' +
       '<div class="sub">Tindakan berikut tidak dapat dibatalkan</div></div></div><div class="card-b">' +
       '<div class="row-actions">' +
-      '<button class="btn danger" data-act="clear-entries">Kosongkan semua transaksi</button>' +
+      '<button class="btn danger" data-act="clear-entries">Kosongkan semua transaksi</button>" +
       '<button class="btn danger" data-act="reset-demo">Reset ke data contoh Oktober 2026</button>' +
-      '<button class="btn danger" data-act="reset-empty">Mulai dari nol (kosong)</button>' +
+      '<button class="btn danger" data-act="reset-empty">Mulai dari nol (kosong)</button>" +
       "</div>" +
       '<div class="small muted" style="margin-top:10px">Disarankan mengunduh backup JSON terlebih dahulu sebelum melakukan reset.</div>' +
       "</div></div>";
